@@ -1,0 +1,133 @@
+import torch
+from PyQt5 import QtCore  # core Qt functionality
+from PyQt5 import QtGui  # extends QtCore with GUI functionality
+from PyQt5 import QtOpenGL  # provides QGLWidget, a special OpenGL QWidget
+from PyQt5 import QtWidgets
+from PyQt5.QtWidgets import QPushButton, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout
+from PyQt5.QtCore import QObject, pyqtSlot as Slot
+
+from PyQt5.QtCore import pyqtSignal
+import OpenGL.GL as gl  # python wrapping of OpenGL
+from OpenGL import GLU  # OpenGL Utility Library, extends OpenGL functionality
+from OpenGL.arrays import vbo
+
+import numpy as np
+import sys
+
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+
+from lidarDataLoader import Lidar
+from dataPreProcessor import preProcess, loadData
+from trainers import Trainer
+
+class ChartWindow(QMainWindow):
+    updateScene = pyqtSignal(str)
+    updateGLWindow = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.initUI()
+
+    def initUI(self):
+        self.setWindowTitle('SDF Visualization')
+        self.fig = Figure(figsize=(500, 50))
+        self.canvas = FigureCanvas(self.fig)
+        self.axes = self.fig.add_subplot(111, projection='3d')
+
+        self._run_button = QPushButton("Run")
+        self._run_button.clicked.connect(self.run)
+
+        canvas_widget = QWidget()
+        canvas_layout = QVBoxLayout(canvas_widget)
+        canvas_layout.addWidget(self.canvas)
+
+        main_widget = QWidget(self)
+        main_layout = QHBoxLayout(main_widget)
+        main_layout.addWidget(self._run_button)
+
+        main_layout.addWidget(canvas_widget)
+        main_layout.addStretch()
+        self.setCentralWidget(main_widget)
+
+        self.pointCoordinates = []
+        self.updateScene.connect(self.update)
+        self.pointCloud = np.empty((0, 3), dtype=np.float32)
+        self.colors = np.empty((0, 3), dtype=np.float32)
+
+        self.resize(800, 800)
+    @Slot()
+    def run(self):
+        lidar = Lidar(self)
+        lidar.load()
+
+    def update(self):
+        completed_dataset = preProcess(self.pointCoordinates)
+        train_loader, test_loader = loadData(completed_dataset)
+        model = Trainer(train_loader, test_loader)
+        self.load_pointcloud(model, completed_dataset)
+
+        if self.pointCloud.size == 0:
+            print("No points to plot")
+            return
+
+        self.axes.clear()
+        self.axes.scatter(self.pointCloud[:, 0], self.pointCloud[:, 1], self.pointCloud[:, 2])
+        self.axes.set_xlabel('X')
+        self.axes.set_ylabel('Y')
+        self.axes.set_zlabel('Z')
+        x_range = np.abs(np.ptp(self.pointCloud[:, 0]))
+        y_range = np.abs(np.ptp(self.pointCloud[:, 1]))
+        z_range = np.abs(np.ptp(self.pointCloud[:, 2]))
+
+        # Calculate the maximum range among all axes
+        max_range = max(x_range, y_range, z_range)
+
+        # Set the aspect ratio based on the maximum range
+        self.axes.set_box_aspect([max_range] * 3)
+        self.canvas.draw()
+
+        print("dataset details")
+        print("dataset details", len(completed_dataset))
+        print("-------------------------------------------------------------------------------")
+        print("-------------------------------------------------------------------------------")
+
+    def load_pointcloud(self, model, completed_dataset):
+        points = np.empty((0, 3), dtype=np.float32)
+        colors = np.empty((0, 3), dtype=np.float32)
+
+        for i in completed_dataset:
+            distance, confidence = self.sdf_function(model, i[0], i[1], i[2])
+            if distance <= 0:
+                pnt = np.array([i[0], i[1], i[2]], dtype=np.float32)
+                self.pointCloud = np.vstack((self.pointCloud, pnt))
+                self.colors = np.vstack((self.colors, [0.7, 0.5, 0.4]))
+
+
+        #print("///////////////////////////////////lidar points//////////////",points)
+        # points = np.random.rand(1000, 3) * 10
+        # colors = np.random.rand(1000, 3)
+        # self.pointCloud = points
+        # self.colors = colors
+        print("size to gl: ",len(self.pointCloud))
+        print("max to gl: ", np.max(self.pointCloud))
+        print("min to gl: ", np.min(self.pointCloud))
+        print("////////////////////////////////random points///////////////",self.pointCloud)
+
+        #self.updateGLWindow.emit("Updated GL Window.")
+        # return points, colors
+
+    def sdf_function(self, model,x, y, z):
+        input_tensor = torch.tensor([x, y, z], dtype=torch.float32)
+        with torch.no_grad():
+            return model(input_tensor).detach().numpy()
+
+
+
+
+if __name__ == '__main__':
+    app = QtWidgets.QApplication(sys.argv)
+    win = ChartWindow()
+    #win.run()
+    win.show()
+    sys.exit(app.exec_())
